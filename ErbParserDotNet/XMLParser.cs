@@ -30,6 +30,17 @@ public class XMLParser
 
             // 地图
             ProcessGmapData(doc, valueList);
+
+            //以下为FL特化提取类
+
+            //称号-普通
+            ProcessTitleData(doc, valueList);
+
+            //称号-加成
+            ProcessTitleBonusData(doc, valueList);
+
+            //素质-普通
+            ProcessTalentData(doc, valueList);
         }
         catch (Exception ex)
         {
@@ -103,6 +114,72 @@ public class XMLParser
             // 提取地图节点名称
             ExtractElementText(gmapData.Element("NODE_NAME"), terms);
         }
+    }
+
+    //提取称号部分文字
+    static void  ProcessTitleData(XDocument doc, List<string> terms)
+    {
+        foreach (XElement title in doc.Descendants("title"))
+        {
+             ExtractAttributeValue(title, "titlename", terms);
+
+            XElement unlockHint = title.Element("unlockHint");
+            if (unlockHint != null && !string.IsNullOrWhiteSpace(unlockHint.Value))
+            {
+                terms.Add(unlockHint.Value);
+            }
+
+            XElement titleDescription = title.Element("titleDescription");
+            if (titleDescription != null && !string.IsNullOrWhiteSpace(titleDescription.Value))
+            {
+                terms.Add(titleDescription.Value);
+            }
+
+            foreach (XElement reqCondition in title.Elements("reqCondition"))
+            {
+                ExtractAttributeValue(reqCondition, "condition", terms);
+            }
+        }
+    }
+
+
+//提取加成称号部分文字
+    static void  ProcessTitleBonusData(XDocument doc, List<string> terms)
+    {
+        foreach (XElement titleBonus in doc.Descendants("titleBonus"))
+        {
+             ExtractAttributeValue(titleBonus, "name", terms);
+
+            XElement description = titleBonus.Element("description");
+            if (description != null && !string.IsNullOrWhiteSpace(description.Value))
+            {
+                terms.Add(description.Value);
+            }
+        }
+        foreach (XElement modifier in doc.Descendants("modifier"))
+        {
+            XElement modifyCondition = modifier.Element("modifyCondition");
+            if (modifyCondition != null && !string.IsNullOrWhiteSpace(modifyCondition.Value))
+            {
+                terms.Add(modifyCondition.Value);
+            }
+        }
+    }
+
+    static void ProcessTalentData(XDocument doc, List<string> terms)
+        {
+            foreach (XElement defname in doc.Descendants("defname"))
+            {
+                ExtractAttributeValue(defname, "parentname", terms);
+
+                XElement tooltip = defname.Element("tooltip");
+                ExtractAttributeValue(tooltip, "color", terms);
+                if (tooltip != null && !string.IsNullOrWhiteSpace(tooltip.Value))
+                {
+                    terms.Add(tooltip.Value);
+                }
+            }
+
     }
 
     [Obsolete]
