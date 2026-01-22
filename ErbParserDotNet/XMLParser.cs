@@ -41,6 +41,10 @@ public class XMLParser
 
             //素质-普通
             ProcessTalentData(doc, valueList);
+
+            //状态
+            ProcessTokenData(doc, valueList);
+
         }
         catch (Exception ex)
         {
@@ -179,8 +183,30 @@ public class XMLParser
                     terms.Add(tooltip.Value);
                 }
             }
+           
+        }
+        static void ProcessTokenData(XDocument doc, List<string> terms)
+        {
+            foreach (XElement defname in doc.Descendants("defname"))
+            {
+                ExtractAttributeValue(defname, "tokenname", terms);
 
-    }
+                XElement tooltip = defname.Element("tooltip");
+                if (tooltip != null && !string.IsNullOrWhiteSpace(tooltip.Value))
+                {
+                    terms.Add(tooltip.Value);
+                }
+            }
+            foreach (XElement triggeredskill in doc.Descendants("triggeredskill"))
+            {
+                XElement skillname = triggeredskill.Element("skillname");
+                if (skillname != null && !string.IsNullOrWhiteSpace(skillname.Value))
+                {
+                    terms.Add(skillname.Value);
+                }
+            }
+  
+        }
 
     [Obsolete]
     static void ProcessContentLines(string content, List<string> terms)
