@@ -19,8 +19,8 @@ public class XMLParser
         {
             XDocument doc = XDocument.Load(filePath, LoadOptions.None);
 
-            // 技能
-            ProcessSkillDefinitions(doc, valueList);
+            // 现在这个函数不止负责技能，还负责其他几个同样使用defname资源的文件
+            ProcessDefnameDefinitions(doc, valueList);
 
             // 敌人
             ProcessEnemyData(doc, valueList);
@@ -31,19 +31,13 @@ public class XMLParser
             // 地图
             ProcessGmapData(doc, valueList);
 
-            //以下为FL特化提取类
+            // 以下为FL特化提取类
 
-            //称号-普通
+            // 称号-普通
             ProcessTitleData(doc, valueList);
 
-            //称号-加成
+            // 称号-加成
             ProcessTitleBonusData(doc, valueList);
-
-            //素质-普通
-            ProcessTalentData(doc, valueList);
-
-            //状态
-            ProcessTokenData(doc, valueList);
 
         }
         catch (Exception ex)
@@ -52,13 +46,22 @@ public class XMLParser
         }
     }
 
-    static void ProcessSkillDefinitions(XDocument doc, List<string> terms)
+    static void ProcessDefnameDefinitions(XDocument doc, List<string> terms)
     {
         foreach (XElement defname in doc.Descendants("defname"))
         {
+            ExtractAttributeValue(defname, "parentname", terms);
+            ExtractElementText(defname.Element("tokenname"), terms);
             ExtractElementText(defname.Element("skillname"), terms);
             ExtractElementText(defname.Element("description"), terms);
             ExtractElementText(defname.Element("unlockhint"), terms);
+
+            XElement tooltip = defname.Element("tooltip");
+            ExtractAttributeValue(tooltip, "color", terms);
+            if (tooltip != null && !string.IsNullOrWhiteSpace(tooltip.Value))
+            {
+                terms.Add(tooltip.Value);
+            }
 
             foreach (XElement reqparam in defname.Elements("reqparam"))
             {
@@ -72,6 +75,19 @@ public class XMLParser
             {
                 ExtractAttributeValue(reqchara, "name", terms);
             }
+        }
+        foreach (XElement triggeredskill in doc.Descendants("triggeredskill"))
+         {
+            XElement skillname = triggeredskill.Element("skillname");
+            if (skillname != null && !string.IsNullOrWhiteSpace(skillname.Value))
+            {
+                terms.Add(skillname.Value);
+            }
+        }
+        foreach (XElement randomCharaTalent in doc.Descendants("randomCharaTalentES"))
+         {
+            XElement modifier = randomCharaTalent.Element("modifier");
+            ExtractAttributeValue(modifier, "eval", terms);
         }
     }
 
@@ -169,44 +185,6 @@ public class XMLParser
             }
         }
     }
-
-    static void ProcessTalentData(XDocument doc, List<string> terms)
-        {
-            foreach (XElement defname in doc.Descendants("defname"))
-            {
-                ExtractAttributeValue(defname, "parentname", terms);
-
-                XElement tooltip = defname.Element("tooltip");
-                ExtractAttributeValue(tooltip, "color", terms);
-                if (tooltip != null && !string.IsNullOrWhiteSpace(tooltip.Value))
-                {
-                    terms.Add(tooltip.Value);
-                }
-            }
-           
-        }
-        static void ProcessTokenData(XDocument doc, List<string> terms)
-        {
-            foreach (XElement defname in doc.Descendants("defname"))
-            {
-                ExtractAttributeValue(defname, "tokenname", terms);
-
-                XElement tooltip = defname.Element("tooltip");
-                if (tooltip != null && !string.IsNullOrWhiteSpace(tooltip.Value))
-                {
-                    terms.Add(tooltip.Value);
-                }
-            }
-            foreach (XElement triggeredskill in doc.Descendants("triggeredskill"))
-            {
-                XElement skillname = triggeredskill.Element("skillname");
-                if (skillname != null && !string.IsNullOrWhiteSpace(skillname.Value))
-                {
-                    terms.Add(skillname.Value);
-                }
-            }
-  
-        }
 
     [Obsolete]
     static void ProcessContentLines(string content, List<string> terms)
