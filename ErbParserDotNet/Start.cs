@@ -468,59 +468,33 @@ public static class Start
     static void FillTranz()
     {
         string directoryPath = Tools.ReadLine("请拖入PT字典目录（务必备份）：");
-        // 获取目录中所有JSON文件
-        var jsonFiles = Directory.GetFiles(directoryPath, "*.json", SearchOption.AllDirectories);
 
         Timer.Start();
-        // 遍历所有JSON文件，得到待处理对象和已翻译词典
-        Dictionary<string, JArray> 待处理对象 = new Dictionary<string, JArray>();
-        Dictionary<string, string> 已翻译字典 = new Dictionary<string, string>();
-        foreach (var jsonFile in jsonFiles)
+        // 第一遍只提取已翻译条目，避免把所有 JSON 常驻在内存里。
+        var 已翻译字典 = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var jsonFile in Directory.EnumerateFiles(directoryPath, "*.json", SearchOption.AllDirectories))
         {
-            string jsonContent = File.ReadAllText(jsonFile);
-            JArray jsonArray = JArray.Parse(jsonContent);
-            待处理对象.Add(jsonFile, jsonArray);
-
-            // 将每个JObject添加到列表中
-            foreach (JObject jobj in jsonArray.ToObject<List<JObject>>())
+            var jsonArray = LoadJsonArray(jsonFile);
+            foreach (JObject jobj in jsonArray.Children<JObject>())
             {
                 // 有疑问的词条也应该被批量翻译吗，只要也标注为有疑问就好？
                 //if (jobj.ContainsKey("stage") && (int)jobj["stage"].ToObject(typeof(int)) > 0)
-                if (jobj.ContainsKey("stage") && jobj["stage"].ToString() == "1")
+                if (HasStage(jobj, "1"))
                 {
-                    string 原文 = jobj["original"].ToString().Trim();
-                    string 译文 = jobj["translation"].ToString().Trim();
-                    if (已翻译字典.ContainsKey(原文))
+                    string 原文 = GetJObjectStringValue(jobj, "original", true);
+                    string 译文 = GetJObjectStringValue(jobj, "translation", true);
+
+                    string 现有译文;
+                    if (已翻译字典.TryGetValue(原文, out 现有译文))
                     {
-                        if (已翻译字典[原文] != 译文)
+                        if (!string.Equals(现有译文, 译文, StringComparison.Ordinal))
                         {
                             Console.WriteLine($"【警告】“{原文}”被翻译为多个版本！");
                         }
                     }
                     else
                     {
-                        if (原文.StartsWith("\"") && !译文.StartsWith("\""))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
-                        }
-                        if (原文.EndsWith("\"") && !译文.EndsWith("\""))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
-                        }
-
-                        if ((原文.Count(c => c == '%') >= 2) && (译文.Count(c => c == '%') < 2))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的百分号似乎缺失了！");
-                        }
-
-                        if (原文.Contains('{') && !译文.Contains('{'))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的左花括号似乎缺失了！");
-                        }
-                        if (原文.Contains('}') && !译文.Contains('}'))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的右花括号似乎缺失了！");
-                        }
+                        WarnIfFormattingLooksLost(原文, 译文);
                         已翻译字典.Add(原文, 译文);
                     }
                 }
@@ -529,23 +503,25 @@ public static class Start
         Timer.Stop();
         Console.WriteLine("字典读取完成！开始替换未翻译词条！");
         Timer.Start();
-        foreach (var 条目 in 待处理对象)
+        foreach (var jsonFile in Directory.EnumerateFiles(directoryPath, "*.json", SearchOption.AllDirectories))
         {
             bool 需要输出 = false;
-            List<JObject> 新文件 = new List<JObject>();
-            foreach (JObject jobj in 条目.Value.ToObject<List<JObject>>())
+            var jsonArray = LoadJsonArray(jsonFile);
+            foreach (JObject jobj in jsonArray.Children<JObject>())
             {
-                string 原文 = jobj["original"].ToString();
-                if (jobj.ContainsKey("stage") && jobj["stage"].ToString() == "0")
+                string 原文 = GetJObjectStringValue(jobj, "original");
+                if (HasStage(jobj, "0"))
                 {
+                    string 去空白原文 = 原文.Trim();
+                    string 翻译;
                     //// 天麻临时特殊处理1
                     //Match IMGSRC = Regex.Match(原文, $"^\"<img src='(.*?)'>\"$");
-                    if (已翻译字典.ContainsKey(原文))
+                    if (已翻译字典.TryGetValue(原文, out 翻译))
                     {
-                        Console.WriteLine($"【翻译】{已翻译字典[原文]}");
-                        jobj["translation"] = 已翻译字典[原文];
-                        jobj["stage"] = 1;
+                        Console.WriteLine($"【翻译】{翻译}");
+                        ApplyTranslation(jobj, 翻译);
                         需要输出 = true;
+                        continue;
                     }
                     //// 天麻临时特殊处理1
                     //else if (IMGSRC.Success && 已翻译字典.ContainsKey(IMGSRC.Groups[1].Value))
@@ -556,70 +532,63 @@ public static class Start
                     //    需要输出 = true;
                     //}
                     // 引号括起的也要拿去和不括起的比较
-                    else if (原文.Trim().StartsWith("\"") || 原文.Trim().EndsWith("\""))
+                    if ((去空白原文.StartsWith("\"", StringComparison.Ordinal) || 去空白原文.EndsWith("\"", StringComparison.Ordinal))
+                        && 已翻译字典.TryGetValue(去空白原文.Trim('"'), out 翻译))
                     {
-                        string 处理后原文 = 原文.Trim().Trim('"');
-
-                        if (已翻译字典.ContainsKey(处理后原文))
+                        char? 前引号 = null;
+                        char? 后引号 = null;
+                        if (去空白原文.StartsWith("\"", StringComparison.Ordinal))
                         {
-                            char? 前引号 = null;
-                            char? 后引号 = null;
-                            if (原文.Trim().StartsWith("\""))
-                            {
-                                前引号 = '"';
-                            }
-                            if (原文.Trim().EndsWith("\""))
-                            {
-                                后引号 = '"';
-                            }
-
-                            Console.WriteLine($"【括号】{已翻译字典[处理后原文]}");
-                            jobj["translation"] = $"{前引号}{已翻译字典[处理后原文]}{后引号}";
-                            jobj["stage"] = 1;
-                            需要输出 = true;
+                            前引号 = '"';
                         }
+                        if (去空白原文.EndsWith("\"", StringComparison.Ordinal))
+                        {
+                            后引号 = '"';
+                        }
+
+                        Console.WriteLine($"【括号】{翻译}");
+                        ApplyTranslation(jobj, $"{前引号}{翻译}{后引号}");
+                        需要输出 = true;
+                        continue;
                     }
                     // 处理残留括号
-                    else if (原文.Trim().StartsWith("(\"") || 原文.Trim().EndsWith("\")"))
+                    if ((去空白原文.StartsWith("(\"", StringComparison.Ordinal) || 去空白原文.EndsWith("\")", StringComparison.Ordinal))
+                        && 已翻译字典.TryGetValue(去空白原文.TrimStart('(').TrimEnd(')').Trim('"'), out 翻译))
                     {
-                        string 处理后原文 = 原文.Trim().TrimStart('(').TrimEnd(')').Trim('"');
-                        if (已翻译字典.ContainsKey(处理后原文))
+                        char? 前括号 = null;
+                        char? 后括号 = null;
+                        char? 前引号 = null;
+                        char? 后引号 = null;
+                        if (去空白原文.StartsWith("(\"", StringComparison.Ordinal))
                         {
-                            char? 前括号 = null;
-                            char? 后括号 = null;
-                            char? 前引号 = null;
-                            char? 后引号 = null;
-                            if (原文.Trim().StartsWith("(\""))
-                            {
-                                前括号 = '(';
-                                前引号 = '"';
-                            }
-                            else if(原文.Trim().StartsWith("("))
-                            {
-                                前括号 = '(';
-                            }
-                            if (原文.Trim().EndsWith("\")"))
-                            {
-                                后括号 = ')';
-                                后引号 = '"';
-                            }
-                            else if (原文.Trim().StartsWith(")"))
-                            {
-                                后括号 = ')';
-                            }
-
-                            Console.WriteLine($"【括号】{已翻译字典[处理后原文]}");
-                            jobj["translation"] = $"{前括号}{前引号}{已翻译字典[处理后原文]}{后引号}{后括号}";
-                            jobj["stage"] = 1;
-                            需要输出 = true;
+                            前括号 = '(';
+                            前引号 = '"';
                         }
+                        else if (去空白原文.StartsWith("(", StringComparison.Ordinal))
+                        {
+                            前括号 = '(';
+                        }
+                        if (去空白原文.EndsWith("\")", StringComparison.Ordinal))
+                        {
+                            后括号 = ')';
+                            后引号 = '"';
+                        }
+                        else if (去空白原文.StartsWith(")", StringComparison.Ordinal))
+                        {
+                            后括号 = ')';
+                        }
+
+                        Console.WriteLine($"【括号】{翻译}");
+                        ApplyTranslation(jobj, $"{前括号}{前引号}{翻译}{后引号}{后括号}");
+                        需要输出 = true;
+                        continue;
                     }
                     // 百分号括起的也要拿去和不括起的比较
-                    else if (原文.StartsWith("%") && 原文.EndsWith("%") && 已翻译字典.ContainsKey(原文.Trim('%')))
+                    if (原文.StartsWith("%", StringComparison.Ordinal) && 原文.EndsWith("%", StringComparison.Ordinal)
+                        && 已翻译字典.TryGetValue(原文.Trim('%'), out 翻译))
                     {
-                        Console.WriteLine($"【百分】{已翻译字典[原文.Trim('%')]}");
-                        jobj["translation"] = $"%{已翻译字典[原文.Trim('%')]}%";
-                        jobj["stage"] = 1;
+                        Console.WriteLine($"【百分】{翻译}");
+                        ApplyTranslation(jobj, $"%{翻译}%");
                         需要输出 = true;
                     }
                     //// 天麻临时特殊处理2
@@ -631,12 +600,10 @@ public static class Start
                     //    需要输出 = true;
                     //}
                 }
-                新文件.Add(jobj);
             }
             if (需要输出)
             {
-                string jsonContent = JsonConvert.SerializeObject(新文件, Formatting.Indented);
-                File.WriteAllText(条目.Key, jsonContent);
+                WriteJsonArray(jsonFile, jsonArray);
             }
         }
         Timer.Stop();
@@ -644,6 +611,96 @@ public static class Start
         {
             Process.Start(directoryPath);
         }
+    }
+
+    static JArray LoadJsonArray(string jsonFile)
+    {
+        using (var reader = File.OpenText(jsonFile))
+        using (var jsonReader = new JsonTextReader(reader))
+        {
+            return JArray.Load(jsonReader);
+        }
+    }
+
+    static void WriteJsonArray(string jsonFile, JArray jsonArray)
+    {
+        using (var fileStream = new FileStream(jsonFile, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var writer = new StreamWriter(fileStream, new UTF8Encoding(false)))
+        using (var jsonWriter = new JsonTextWriter(writer) { Formatting = Formatting.Indented })
+        {
+            jsonArray.WriteTo(jsonWriter);
+        }
+    }
+
+    static bool HasStage(JObject jobj, string stage)
+    {
+        JToken stageToken;
+        return jobj.TryGetValue("stage", out stageToken)
+            && stageToken != null
+            && string.Equals(stageToken.ToString(), stage, StringComparison.Ordinal);
+    }
+
+    static string GetJObjectStringValue(JObject jobj, string propertyName, bool trim = false)
+    {
+        JToken valueToken;
+        if (!jobj.TryGetValue(propertyName, out valueToken) || valueToken == null)
+        {
+            return string.Empty;
+        }
+
+        string value = valueToken.ToString();
+        return trim ? value.Trim() : value;
+    }
+
+    static void ApplyTranslation(JObject jobj, string translation)
+    {
+        jobj["translation"] = translation;
+        jobj["stage"] = 1;
+    }
+
+    static void WarnIfFormattingLooksLost(string 原文, string 译文)
+    {
+        if (原文.StartsWith("\"", StringComparison.Ordinal) && !译文.StartsWith("\"", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
+        }
+        if (原文.EndsWith("\"", StringComparison.Ordinal) && !译文.EndsWith("\"", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
+        }
+
+        if (ContainsCharAtLeast(原文, '%', 2) && !ContainsCharAtLeast(译文, '%', 2))
+        {
+            Console.WriteLine($"【警告】“{原文}”的百分号似乎缺失了！");
+        }
+
+        if (原文.IndexOf('{') >= 0 && 译文.IndexOf('{') < 0)
+        {
+            Console.WriteLine($"【警告】“{原文}”的左花括号似乎缺失了！");
+        }
+        if (原文.IndexOf('}') >= 0 && 译文.IndexOf('}') < 0)
+        {
+            Console.WriteLine($"【警告】“{原文}”的右花括号似乎缺失了！");
+        }
+    }
+
+    static bool ContainsCharAtLeast(string text, char target, int count)
+    {
+        if (string.IsNullOrEmpty(text) || count <= 0)
+        {
+            return false;
+        }
+
+        int found = 0;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == target && ++found >= count)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
     static void 自动修正(string 游戏目录, string 字典根目录)
     {
