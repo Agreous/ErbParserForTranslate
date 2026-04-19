@@ -53,7 +53,8 @@ public static class Start
 [ 9] - 从单文件提取PT字典
 [10] - 获取字典差异（方便上传Paratranz）
 [11] - 设置
-[12] - 访问项目主页";
+[12] - 访问项目主页
+[13] - 清理单个JSON里的context字段";
             string command = Tools.ReadLine(menuString);
             switch (command)
             {
@@ -98,6 +99,9 @@ public static class Start
                     break;
                 case "12":
                     Process.Start("https://github.com/Future-R/ErbParserForTranslate");
+                    break;
+                case "13":
+                    清理单个Json的Content字段();
                     break;
                 case "999":
                     Test.Debug();
@@ -217,6 +221,41 @@ public static class Start
         //}
     }
 
+    static void 清理单个Json的Content字段()
+    {
+        string 文件 = Tools.ReadLine("请拖入需要清理的单个JSON文件：");
+        if (string.IsNullOrWhiteSpace(文件) || !File.Exists(文件))
+        {
+            Console.WriteLine("【错误】文件不存在，操作已取消。");
+            return;
+        }
+
+        if (!文件.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("【错误】这不是JSON文件，操作已取消。");
+            return;
+        }
+
+        try
+        {
+            string jsonContext = File.ReadAllText(文件);
+            JToken jsonToken = JToken.Parse(jsonContext);
+            int removedCount = RemovePropertyRecursive(jsonToken, "context");
+
+            string outputFile = Path.Combine(
+                Path.GetDirectoryName(文件),
+                Path.GetFileNameWithoutExtension(文件) + "_without_context.json");
+
+            File.WriteAllText(outputFile, jsonToken.ToString(Formatting.Indented));
+            Console.WriteLine($"处理完成，共移除 {removedCount} 个 context 字段。");
+            Console.WriteLine($"已输出到：{outputFile}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"【错误】JSON处理失败：{ex.Message}");
+        }
+    }
+
     static void PT字典转Mtool字典()
     {
         string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
@@ -288,6 +327,43 @@ public static class Start
         {
             Process.Start(baseDirectory);
         }
+    }
+
+    private static int RemovePropertyRecursive(JToken token, string propertyName)
+    {
+        if (token == null)
+        {
+            return 0;
+        }
+
+        int removedCount = 0;
+
+        if (token is JObject obj)
+        {
+            var matchedProperties = obj.Properties()
+                .Where(p => p.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            removedCount += matchedProperties.Count;
+            foreach (var property in matchedProperties)
+            {
+                property.Remove();
+            }
+
+            foreach (var property in obj.Properties().ToList())
+            {
+                removedCount += RemovePropertyRecursive(property.Value, propertyName);
+            }
+        }
+        else if (token is JArray array)
+        {
+            foreach (var child in array.ToList())
+            {
+                removedCount += RemovePropertyRecursive(child, propertyName);
+            }
+        }
+
+        return removedCount;
     }
 
     static void 机翻导入()
@@ -613,12 +689,13 @@ public static class Start
         // 合并后要去除尾逗号，再加回方括号
         string 合并后的字符串 = "[" + pt输入.ToString().TrimEnd(',') + "]";
         JArray 修正字典 = JArray.Parse(合并后的字符串);
+        var 替换计划 = Tools.BuildRegexReplacePlan(修正字典);
 
         Console.WriteLine("根据CPU性能与磁盘读写速度，修正过程可能会长达1秒~60秒，请勿中止程序！");
         Parallel.ForEach(待汉化文件, (文件名) =>
         {
             string 待处理文本 = File.ReadAllText(文件名);
-            待处理文本 = Tools.RegexReplace(待处理文本, 修正字典);
+            待处理文本 = Tools.RegexReplace(待处理文本, 替换计划);
             File.WriteAllText(文件名, 待处理文本, Configs.fileEncoding);
         });
 
@@ -656,6 +733,7 @@ public static class Start
         // 合并后要去除尾逗号，再加回方括号
         string 合并后的字符串 = "[" + pt输入.ToString().TrimEnd(',') + "]";
         JArray 修正字典 = JArray.Parse(合并后的字符串);
+        var 替换计划 = Tools.BuildRegexReplacePlan(修正字典);
         Timer.Stop();
         Console.WriteLine("字典翻译导入完成！正在全局替换，请稍候……");
 
@@ -663,7 +741,7 @@ public static class Start
         foreach (var 文件名 in 文件名List)
         {
             string 待处理文本 = File.ReadAllText(文件名);
-            待处理文本 = Tools.RegexReplace(待处理文本, 修正字典);
+            待处理文本 = Tools.RegexReplace(待处理文本, 替换计划);
             File.WriteAllText(文件名, 待处理文本, Configs.fileEncoding);
         }
         Timer.Stop();
@@ -753,6 +831,7 @@ public static class Start
                 {
                     // 读取pt脚本
                     JArray jsonArray = JArray.Parse(ptJsonContent);
+                    var 替换计划 = !isIMG ? Tools.BuildRegexReplacePlan(jsonArray) : null;
 
                     foreach (var item in targetFiles)
                     {
@@ -761,7 +840,7 @@ public static class Start
                         if (!isIMG)
                         {
                             // 使用字典替换原文
-                            scriptContent = Tools.RegexReplace(scriptContent, jsonArray);
+                            scriptContent = Tools.RegexReplace(scriptContent, 替换计划);
                         }
                         else
                         {
@@ -1448,7 +1527,7 @@ public static class Start
         Timer.Start();
 
         // 3. 获取新目录中的所有文件
-        var newFiles = Directory.GetFiles(newPath, "*.*", SearchOption.AllDirectories);
+        var newFiles = Directory.EnumerateFiles(newPath, "*.*", SearchOption.AllDirectories);
         int copiedFilesCount = 0;
         int processedFilesCount = 0;
 
@@ -1510,31 +1589,104 @@ public static class Start
     {
         try
         {
-            // 不预先检查文件大小，因为换行符不同会导致大小不同
-            byte[] bytes1 = File.ReadAllBytes(path1);
-            byte[] bytes2 = File.ReadAllBytes(path2);
-
-            // 优化：如果文件在字节层面完全一样，则直接返回 true，这是最快的情况。
-            if (bytes1.SequenceEqual(bytes2))
+            using (var stream1 = new FileStream(path1, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.SequentialScan))
+            using (var stream2 = new FileStream(path2, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.SequentialScan))
             {
-                return true;
+                // 字节数相同时，先做一次原始流比较，命中时最快。
+                if (stream1.Length == stream2.Length && StreamsEqual(stream1, stream2))
+                {
+                    return true;
+                }
+
+                stream1.Position = 0;
+                stream2.Position = 0;
+                return StreamsEqualIgnoringCarriageReturn(stream1, stream2);
             }
-
-            // 规范化处理：通过移除所有回车符（Carriage Return, CR, 0x0D, '\r'）的字节
-            // 来实现对不同换行符的兼容。这会将 Windows 的 CRLF (`\r\n`) 和
-            // Unix 的 LF (`\n`) 都视为相同的换行。
-            // 使用 LINQ 的 Where 操作可以高效地创建一个不包含 CR 字节的新序列。
-            var normalizedBytes1 = bytes1.Where(b => b != 0x0D);
-            var normalizedBytes2 = bytes2.Where(b => b != 0x0D);
-
-            // 比较规范化后的字节序列。
-            return normalizedBytes1.SequenceEqual(normalizedBytes2);
         }
         catch (IOException ex)
         {
             // 处理文件可能被占用等IO异常
             Console.WriteLine($"【IO错误】无法对比文件: {ex.Message}");
             return false; // 如果无法比较，则默认它们不同，以便提取出来供用户检查。
+        }
+    }
+
+    private static bool StreamsEqual(Stream stream1, Stream stream2)
+    {
+        byte[] buffer1 = new byte[81920];
+        byte[] buffer2 = new byte[81920];
+
+        while (true)
+        {
+            int read1 = stream1.Read(buffer1, 0, buffer1.Length);
+            int read2 = stream2.Read(buffer2, 0, buffer2.Length);
+
+            if (read1 != read2)
+            {
+                return false;
+            }
+
+            if (read1 == 0)
+            {
+                return true;
+            }
+
+            for (int i = 0; i < read1; i++)
+            {
+                if (buffer1[i] != buffer2[i])
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
+    private static bool StreamsEqualIgnoringCarriageReturn(Stream stream1, Stream stream2)
+    {
+        byte[] buffer1 = new byte[81920];
+        byte[] buffer2 = new byte[81920];
+        int bufferIndex1 = 0;
+        int bufferIndex2 = 0;
+        int bytesInBuffer1 = 0;
+        int bytesInBuffer2 = 0;
+
+        while (true)
+        {
+            int? next1 = ReadNextComparableByte(stream1, buffer1, ref bufferIndex1, ref bytesInBuffer1);
+            int? next2 = ReadNextComparableByte(stream2, buffer2, ref bufferIndex2, ref bytesInBuffer2);
+
+            if (!next1.HasValue || !next2.HasValue)
+            {
+                return next1 == next2;
+            }
+
+            if (next1.Value != next2.Value)
+            {
+                return false;
+            }
+        }
+    }
+
+    private static int? ReadNextComparableByte(Stream stream, byte[] buffer, ref int bufferIndex, ref int bytesInBuffer)
+    {
+        while (true)
+        {
+            if (bufferIndex >= bytesInBuffer)
+            {
+                bytesInBuffer = stream.Read(buffer, 0, buffer.Length);
+                bufferIndex = 0;
+
+                if (bytesInBuffer == 0)
+                {
+                    return null;
+                }
+            }
+
+            byte value = buffer[bufferIndex++];
+            if (value != 0x0D)
+            {
+                return value;
+            }
         }
     }
 
