@@ -19,6 +19,7 @@ public static class Start
 {
     // 之后从配置json里读取
     static readonly string[] erbExtensions = new string[] { ".erb", ".erh" };
+    static readonly string[] json乱码特征 = new string[] { "", "閠", "繧", "懃", "峇", "繝", "縺", "縲", "蜊企", "鮟", "迴ｾ", "蝨ｨ", "髮", "驛", "譛", "蜈", "逕", "鬘", "荳" };
 
     public static void Main()
     {
@@ -54,7 +55,8 @@ public static class Start
 [10] - 对比A/B目录并提取差异到C目录
 [11] - 设置
 [12] - 访问项目主页
-[13] - 清理单个JSON里的context字段";
+[13] - 清理单个JSON里的context字段
+[14] - 清理JSON字典中的乱码条目";
             string command = Tools.ReadLine(menuString);
             switch (command)
             {
@@ -102,6 +104,9 @@ public static class Start
                     break;
                 case "13":
                     清理单个Json的Content字段();
+                    break;
+                case "14":
+                    清理JSON字典乱码条目();
                     break;
                 case "999":
                     Test.Debug();
@@ -253,6 +258,105 @@ public static class Start
         catch (Exception ex)
         {
             Console.WriteLine($"【错误】JSON处理失败：{ex.Message}");
+        }
+    }
+
+    static void 清理JSON字典乱码条目()
+    {
+        string 输入路径 = Tools.ReadLine("请拖入PT字典目录或单个JSON文件（务必备份）：");
+        if (string.IsNullOrWhiteSpace(输入路径))
+        {
+            Console.WriteLine("【错误】路径为空，操作已取消。");
+            return;
+        }
+
+        IEnumerable<string> jsonFiles;
+        string 打开目录;
+        if (File.Exists(输入路径))
+        {
+            if (!输入路径.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("【错误】这不是JSON文件，操作已取消。");
+                return;
+            }
+
+            jsonFiles = new[] { 输入路径 };
+            打开目录 = Path.GetDirectoryName(输入路径);
+        }
+        else if (Directory.Exists(输入路径))
+        {
+            jsonFiles = Directory.EnumerateFiles(输入路径, "*.json", SearchOption.AllDirectories);
+            打开目录 = 输入路径;
+        }
+        else
+        {
+            Console.WriteLine("【错误】找不到输入路径，操作已取消。");
+            return;
+        }
+
+        int 已检查文件数 = 0;
+        int 已修改文件数 = 0;
+        int 已移除条目数 = 0;
+
+        Timer.Start();
+        foreach (string jsonFile in jsonFiles)
+        {
+            已检查文件数++;
+
+            JToken jsonToken;
+            try
+            {
+                jsonToken = LoadJsonToken(jsonFile);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"【错误】读取{jsonFile}失败：{ex.Message}");
+                continue;
+            }
+
+            JArray jsonArray = jsonToken as JArray;
+            if (jsonArray == null)
+            {
+                Console.WriteLine($"【跳过】{Path.GetFileName(jsonFile)}不是PT数组字典。");
+                continue;
+            }
+
+            int 当前文件移除数 = 0;
+            for (int i = jsonArray.Count - 1; i >= 0; i--)
+            {
+                JObject jobj = jsonArray[i] as JObject;
+                if (jobj == null)
+                {
+                    continue;
+                }
+
+                string 原文 = GetJObjectStringValue(jobj, "original", true);
+                string 上下文 = GetJObjectStringValue(jobj, "context", true);
+                if (!LooksLikeJsonMojibake(原文) && !LooksLikeJsonMojibake(上下文))
+                {
+                    continue;
+                }
+
+                jsonArray.RemoveAt(i);
+                当前文件移除数++;
+            }
+
+            if (当前文件移除数 == 0)
+            {
+                continue;
+            }
+
+            WriteJsonArray(jsonFile, jsonArray);
+            已修改文件数++;
+            已移除条目数 += 当前文件移除数;
+            Console.WriteLine($"【清理】{Path.GetFileName(jsonFile)}移除了{当前文件移除数}个乱码条目。");
+        }
+        Timer.Stop();
+
+        Console.WriteLine($"处理完成，共检查{已检查文件数}个JSON，修改{已修改文件数}个，移除{已移除条目数}个乱码条目。");
+        if (Configs.autoOpenFolder && !string.IsNullOrEmpty(打开目录))
+        {
+            Process.Start(打开目录);
         }
     }
 
@@ -613,13 +717,24 @@ public static class Start
         }
     }
 
-    static JArray LoadJsonArray(string jsonFile)
+    static JToken LoadJsonToken(string jsonFile)
     {
         using (var reader = File.OpenText(jsonFile))
         using (var jsonReader = new JsonTextReader(reader))
         {
-            return JArray.Load(jsonReader);
+            return JToken.Load(jsonReader);
         }
+    }
+
+    static JArray LoadJsonArray(string jsonFile)
+    {
+        JArray jsonArray = LoadJsonToken(jsonFile) as JArray;
+        if (jsonArray == null)
+        {
+            throw new JsonReaderException($"{Path.GetFileName(jsonFile)}不是PT数组字典。");
+        }
+
+        return jsonArray;
     }
 
     static void WriteJsonArray(string jsonFile, JArray jsonArray)
@@ -697,6 +812,52 @@ public static class Start
             if (text[i] == target && ++found >= count)
             {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    static bool LooksLikeJsonMojibake(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        if (text.IndexOf('\uFFFD') >= 0)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c >= '\u0080' && c <= '\u009F')
+            {
+                return true;
+            }
+        }
+
+        int 命中特征数 = 0;
+        foreach (string 特征 in json乱码特征)
+        {
+            int 搜索起点 = 0;
+            while (搜索起点 < text.Length)
+            {
+                int 命中位置 = text.IndexOf(特征, 搜索起点, StringComparison.Ordinal);
+                if (命中位置 < 0)
+                {
+                    break;
+                }
+
+                命中特征数++;
+                if (命中特征数 >= 2)
+                {
+                    return true;
+                }
+
+                搜索起点 = 命中位置 + 特征.Length;
             }
         }
 
