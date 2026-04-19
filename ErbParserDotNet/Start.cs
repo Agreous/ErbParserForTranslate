@@ -51,7 +51,7 @@ public static class Start
 [ 7] - Era传统字典转PT字典
 [ 8] - 将所有文件转换为UTF-8编码
 [ 9] - 从单文件提取PT字典
-[10] - 获取字典差异（方便上传Paratranz）
+[10] - 对比A/B目录并提取差异到C目录
 [11] - 设置
 [12] - 访问项目主页
 [13] - 清理单个JSON里的context字段";
@@ -157,7 +157,7 @@ public static class Start
                 }
                 string warn = resultDetected.Confidence < 0.666 && !日本人可能会用的编码 ? "【警告】" : string.Empty;
                 Console.WriteLine($"{warn}编码: {resultDetected.EncodingName}, 可信: {resultDetected.Confidence}, {Path.GetFileName(filepath)}");
-                encoding = 日本人可能会用的编码 ? resultDetected.Encoding : Encoding.GetEncoding("Shift-JIS");
+                encoding = 日本人可能会用的编码 ? Encoding.GetEncoding("Shift-JIS") : resultDetected.Encoding;
             }
              
             if (Equals(encoding, Encoding.UTF8) || Equals(encoding,Encoding.Default)) return;
@@ -1499,14 +1499,14 @@ public static class Start
     #endregion
 
     /// <summary>
-    /// 对比新旧两个目录，提取所有新增或内容被修改的文件到新目录。
+    /// 对比A目录和B目录，将B目录中新增或内容不同的文件按目录结构复制到C目录。
     /// </summary>
     static void ExtractModifiedFiles()
     {
         // 1. 获取用户输入的目录路径
-        string oldPath = Tools.ReadLine("请拖入原字典目录:");
-        string newPath = Tools.ReadLine("请拖入新字典目录:");
-        string outputPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Extracted_Files_C");
+        string oldPath = Tools.ReadLine("请拖入A目录（作为对比基准）:");
+        string newPath = Tools.ReadLine("请拖入B目录（提取这个目录里新增/不同的文件）:");
+        string outputPath = Tools.ReadLine("请拖入空的C目录（用于接收提取结果）:");
 
         if (!Directory.Exists(oldPath) || !Directory.Exists(newPath))
         {
@@ -1514,14 +1514,37 @@ public static class Start
             return;
         }
 
-        // 2. 准备输出目录
-        Console.WriteLine($"文件将被提取到: {outputPath}");
-        if (Directory.Exists(outputPath))
+        if (string.IsNullOrWhiteSpace(outputPath))
         {
-            Console.WriteLine("警告：输出目录已存在，将先被清空。");
-            Tools.CleanDirectory(outputPath);
+            Console.WriteLine("【错误】C目录不能为空，操作已取消。");
+            return;
         }
-        Directory.CreateDirectory(outputPath);
+
+        string fullOldPath = Path.GetFullPath(oldPath);
+        string fullNewPath = Path.GetFullPath(newPath);
+        string fullOutputPath = Path.GetFullPath(outputPath);
+
+        if (fullOldPath.Equals(fullOutputPath, StringComparison.OrdinalIgnoreCase) ||
+            fullNewPath.Equals(fullOutputPath, StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("【错误】C目录不能与A目录或B目录相同，操作已取消。");
+            return;
+        }
+
+        // 2. 准备输出目录
+        Console.WriteLine($"文件将被提取到: {fullOutputPath}");
+        if (Directory.Exists(fullOutputPath))
+        {
+            if (Directory.EnumerateFileSystemEntries(fullOutputPath).Any())
+            {
+                Console.WriteLine("【错误】C目录不是空目录，操作已取消。");
+                return;
+            }
+        }
+        else
+        {
+            Directory.CreateDirectory(fullOutputPath);
+        }
 
         Console.WriteLine("正在开始对比文件，请稍候...");
         Timer.Start();
@@ -1536,7 +1559,7 @@ public static class Start
         {
             var relativePath = Tools.GetrelativePath(newFile, newPath);
             var oldFile = Path.Combine(oldPath, relativePath);
-            var destFile = Path.Combine(outputPath, relativePath);
+            var destFile = Path.Combine(fullOutputPath, relativePath);
 
             bool shouldCopy = false;
             string reason = "";
@@ -1570,12 +1593,12 @@ public static class Start
         });
 
         Timer.Stop();
-        Console.WriteLine($"\n对比完成！共处理 {processedFilesCount} 个文件，提取了 {copiedFilesCount} 个新增或修改的文件到目录 C。");
+        Console.WriteLine($"\n对比完成！共处理 {processedFilesCount} 个文件，提取了 {copiedFilesCount} 个新增或修改的文件到C目录。");
 
         // 5. 如果配置允许，自动打开输出文件夹
         if (Configs.autoOpenFolder)
         {
-            Process.Start(outputPath);
+            Process.Start(fullOutputPath);
         }
     }
 
