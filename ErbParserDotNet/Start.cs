@@ -1621,10 +1621,18 @@ public static class Start
         }
         int nextKeyIndex = maxKeyNum + 1;
 
+        // 追踪已处理的原文，防止 newEntries 中同一原文多次出现导致重复 key
+        var processedOriginals = new HashSet<string>();
         string basePathWithoutExt = Path.ChangeExtension(relativePath, "");
 
         foreach (var entry in newEntries)
         {
+            // 原文已在当前批次处理过，跳过（防止源文件内同一原文重复出现多次）
+            if (!processedOriginals.Add(entry.Original))
+            {
+                continue;
+            }
+
             if (oldEntriesDict.TryGetValue(entry.Original, out JObject existingObject))
             {
                 // 如果旧条目存在，直接使用
