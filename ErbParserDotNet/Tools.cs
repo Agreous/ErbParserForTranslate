@@ -14,6 +14,21 @@ using System.Xml.Linq;
 /// </summary>
 public static class Tools
 {
+    public sealed class RegexReplacePlan
+    {
+        internal RegexReplacePlan(Regex regex, Dictionary<string, string> replacements)
+        {
+            Regex = regex;
+            Replacements = replacements;
+        }
+
+        internal Regex Regex { get; }
+
+        internal Dictionary<string, string> Replacements { get; }
+
+        public bool HasReplacements => Regex != null && Replacements.Count > 0;
+    }
+
     /// <summary>
     /// 【更暴力】匹配XX:YY:ZZ的纯英文+数字+下划线变量
     /// </summary>
@@ -420,43 +435,74 @@ public static class Tools
     /// <returns></returns>
     public static string RegexReplace(string gameContent, JArray jsonArray)
     {
-        gameContent = gameContent.Replace("\r\n", "\n").Replace("\r", "\n").Replace("<Tab>", "\t");
+        return RegexReplace(gameContent, BuildRegexReplacePlan(jsonArray));
+    }
+
+    public static RegexReplacePlan BuildRegexReplacePlan(JArray jsonArray)
+    {
         Dictionary<string, string> replacements = new Dictionary<string, string>();
-        var dictObjs = jsonArray.ToObject<List<JObject>>()
+        List<string> orderedKeys = new List<string>();
+
+        var dictObjs = jsonArray.Children<JObject>()
             .Where(obj => obj.ContainsKey("stage") && (int)obj["stage"].ToObject(typeof(int)) > 0)
-            .OrderByDescending(obj => obj["original"].ToString().Length);
+            .OrderByDescending(obj => obj["original"]?.ToString().Length ?? 0);
+
         foreach (var dictObj in dictObjs)
         {
-            string key = dictObj["original"].ToString().Replace("\r\n", "\n").Replace("\r", "\n").Replace("\\n", "\n").Replace("\n\n", "\n").Replace("<Tab>", "\t");
-            string value = dictObj["translation"].ToString().Replace("\r\n", "\n").Replace("\r", "\n").Replace("\\n", "\n").Replace("\n\n", "\n").Replace("<Tab>", "\t");
+            string key = NormalizeDictionaryText(dictObj["original"]?.ToString());
+            string value = NormalizeDictionaryText(dictObj["translation"]?.ToString());
 
-            if (!replacements.ContainsKey(key))
+            if (string.IsNullOrEmpty(key) || replacements.ContainsKey(key))
             {
-                replacements.Add(key, value);
+                continue;
             }
+
+            replacements.Add(key, value);
+            orderedKeys.Add(key);
         }
 
-        // 创建正则表达式对象
-        List<string> escapedKeys = new List<string>();
-        foreach (string key in replacements.Keys)
+        if (orderedKeys.Count == 0)
         {
-            escapedKeys.Add(Regex.Escape(key));
+            return new RegexReplacePlan(null, replacements);
         }
-        Regex regex = new Regex(string.Join("|", escapedKeys));
+
+        var pattern = string.Join("|", orderedKeys.Select(Regex.Escape));
+        return new RegexReplacePlan(new Regex(pattern), replacements);
+    }
+
+    public static string RegexReplace(string gameContent, RegexReplacePlan plan)
+    {
+        gameContent = NormalizeGameContent(gameContent);
+        if (plan == null || !plan.HasReplacements)
+        {
+            return gameContent;
+        }
 
         // 使用正则表达式替换字符串中的所有匹配项
-        return regex.Replace(gameContent, match =>
+        return plan.Regex.Replace(gameContent, match =>
         {
-            string value;
-            if (replacements.TryGetValue(match.Value, out value))
+            if (plan.Replacements.TryGetValue(match.Value, out string value))
             {
                 return value.Replace("\\n", Environment.NewLine);
             }
-            else
-            {
-                return match.Value.Replace("\\n", Environment.NewLine);
-            }
+
+            return match.Value.Replace("\\n", Environment.NewLine);
         });
+    }
+
+    private static string NormalizeGameContent(string content)
+    {
+        return content.Replace("\r\n", "\n").Replace("\r", "\n").Replace("<Tab>", "\t");
+    }
+
+    private static string NormalizeDictionaryText(string content)
+    {
+        return (content ?? string.Empty)
+            .Replace("\r\n", "\n")
+            .Replace("\r", "\n")
+            .Replace("\\n", "\n")
+            .Replace("\n\n", "\n")
+            .Replace("<Tab>", "\t");
     }
 
     /// <summary>

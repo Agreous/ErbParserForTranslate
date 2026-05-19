@@ -74,7 +74,13 @@ class ExpressionParser
                     // 左边如果是英文或数字，暴力判断为函数，把函数名从变量名列表中remove
                     if (temp == "(" && (IsEngChar(lastChar) || Char.IsDigit(lastChar)) && variables.Count > 0)
                     {
-                        variables.RemoveAt(variables.Count - 1);
+                        var lastVar = variables[variables.Count - 1];
+                        // 仅当整个变量名是纯 ASCII 英文/数字/下划线时才视为函数名移除
+                        // 防止日文变量名+英文后缀的误判（如 フリー誘発_ADV）
+                        if (lastVar.All(c => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || Char.IsDigit(c) || c == '_'))
+                        {
+                            variables.RemoveAt(variables.Count - 1);
+                        }
                     }
                     // 这里捕获到了完整的运算符，但翻译用不到，所以没做存储
                     //Console.WriteLine($"符号：{temp}");

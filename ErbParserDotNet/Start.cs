@@ -19,6 +19,7 @@ public static class Start
 {
     // 之后从配置json里读取
     static readonly string[] erbExtensions = new string[] { ".erb", ".erh" };
+    static readonly string[] json乱码特征 = new string[] { "", "閠", "繧", "懃", "峇", "繝", "縺", "縲", "蜊企", "鮟", "迴ｾ", "蝨ｨ", "髮", "驛", "譛", "蜈", "逕", "鬘", "荳" };
 
     public static void Main()
     {
@@ -51,9 +52,11 @@ public static class Start
 [ 7] - Era传统字典转PT字典
 [ 8] - 将所有文件转换为UTF-8编码
 [ 9] - 从单文件提取PT字典
-[10] - 获取字典差异（方便上传Paratranz）
+[10] - 对比A/B目录并提取差异到C目录
 [11] - 设置
-[12] - 访问项目主页";
+[12] - 访问项目主页
+[13] - 清理单个JSON里的context字段
+[14] - 清理JSON字典中的乱码条目";
             string command = Tools.ReadLine(menuString);
             switch (command)
             {
@@ -98,6 +101,12 @@ public static class Start
                     break;
                 case "12":
                     Process.Start("https://github.com/Future-R/ErbParserForTranslate");
+                    break;
+                case "13":
+                    清理单个Json的Content字段();
+                    break;
+                case "14":
+                    清理JSON字典乱码条目();
                     break;
                 case "999":
                     Test.Debug();
@@ -153,7 +162,7 @@ public static class Start
                 }
                 string warn = resultDetected.Confidence < 0.666 && !日本人可能会用的编码 ? "【警告】" : string.Empty;
                 Console.WriteLine($"{warn}编码: {resultDetected.EncodingName}, 可信: {resultDetected.Confidence}, {Path.GetFileName(filepath)}");
-                encoding = 日本人可能会用的编码 ? resultDetected.Encoding : Encoding.GetEncoding("Shift-JIS");
+                encoding = 日本人可能会用的编码 ? Encoding.GetEncoding("Shift-JIS") : resultDetected.Encoding;
             }
              
             if (Equals(encoding, Encoding.UTF8) || Equals(encoding,Encoding.Default)) return;
@@ -215,6 +224,140 @@ public static class Start
         //{
         //    Process.Start(Path.GetPathRoot(文件));
         //}
+    }
+
+    static void 清理单个Json的Content字段()
+    {
+        string 文件 = Tools.ReadLine("请拖入需要清理的单个JSON文件：");
+        if (string.IsNullOrWhiteSpace(文件) || !File.Exists(文件))
+        {
+            Console.WriteLine("【错误】文件不存在，操作已取消。");
+            return;
+        }
+
+        if (!文件.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("【错误】这不是JSON文件，操作已取消。");
+            return;
+        }
+
+        try
+        {
+            string jsonContext = File.ReadAllText(文件);
+            JToken jsonToken = JToken.Parse(jsonContext);
+            int removedCount = RemovePropertyRecursive(jsonToken, "context");
+
+            string outputFile = Path.Combine(
+                Path.GetDirectoryName(文件),
+                Path.GetFileNameWithoutExtension(文件) + "_without_context.json");
+
+            File.WriteAllText(outputFile, jsonToken.ToString(Formatting.Indented));
+            Console.WriteLine($"处理完成，共移除 {removedCount} 个 context 字段。");
+            Console.WriteLine($"已输出到：{outputFile}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"【错误】JSON处理失败：{ex.Message}");
+        }
+    }
+
+    static void 清理JSON字典乱码条目()
+    {
+        string 输入路径 = Tools.ReadLine("请拖入PT字典目录或单个JSON文件（务必备份）：");
+        if (string.IsNullOrWhiteSpace(输入路径))
+        {
+            Console.WriteLine("【错误】路径为空，操作已取消。");
+            return;
+        }
+
+        IEnumerable<string> jsonFiles;
+        string 打开目录;
+        if (File.Exists(输入路径))
+        {
+            if (!输入路径.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("【错误】这不是JSON文件，操作已取消。");
+                return;
+            }
+
+            jsonFiles = new[] { 输入路径 };
+            打开目录 = Path.GetDirectoryName(输入路径);
+        }
+        else if (Directory.Exists(输入路径))
+        {
+            jsonFiles = Directory.EnumerateFiles(输入路径, "*.json", SearchOption.AllDirectories);
+            打开目录 = 输入路径;
+        }
+        else
+        {
+            Console.WriteLine("【错误】找不到输入路径，操作已取消。");
+            return;
+        }
+
+        int 已检查文件数 = 0;
+        int 已修改文件数 = 0;
+        int 已移除条目数 = 0;
+
+        Timer.Start();
+        foreach (string jsonFile in jsonFiles)
+        {
+            已检查文件数++;
+
+            JToken jsonToken;
+            try
+            {
+                jsonToken = LoadJsonToken(jsonFile);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"【错误】读取{jsonFile}失败：{ex.Message}");
+                continue;
+            }
+
+            JArray jsonArray = jsonToken as JArray;
+            if (jsonArray == null)
+            {
+                Console.WriteLine($"【跳过】{Path.GetFileName(jsonFile)}不是PT数组字典。");
+                continue;
+            }
+
+            int 当前文件移除数 = 0;
+            for (int i = jsonArray.Count - 1; i >= 0; i--)
+            {
+                JObject jobj = jsonArray[i] as JObject;
+                if (jobj == null)
+                {
+                    continue;
+                }
+
+                string 原文 = GetJObjectStringValue(jobj, "original", true);
+                string 上下文 = GetJObjectStringValue(jobj, "context", true);
+                if (!LooksLikeJsonMojibake(原文) && !LooksLikeJsonMojibake(上下文))
+                {
+                    continue;
+                }
+
+                jsonArray.RemoveAt(i);
+                当前文件移除数++;
+            }
+
+            if (当前文件移除数 == 0)
+            {
+                continue;
+            }
+
+            WriteJsonArray(jsonFile, jsonArray);
+            已修改文件数++;
+            已移除条目数 += 当前文件移除数;
+            Console.WriteLine($"【清理】{Path.GetFileName(jsonFile)}移除了{当前文件移除数}个乱码条目。");
+        }
+        Timer.Stop();
+
+        Console.WriteLine($"处理完成，共检查{已检查文件数}个JSON，修改{已修改文件数}个，移除{已移除条目数}个乱码条目。");
+        if (Configs.autoOpenFolder && !string.IsNullOrEmpty(打开目录))
+        {
+            Process.Start(打开目录);
+        }
     }
 
     static void PT字典转Mtool字典()
@@ -288,6 +431,43 @@ public static class Start
         {
             Process.Start(baseDirectory);
         }
+    }
+
+    private static int RemovePropertyRecursive(JToken token, string propertyName)
+    {
+        if (token == null)
+        {
+            return 0;
+        }
+
+        int removedCount = 0;
+
+        if (token is JObject obj)
+        {
+            var matchedProperties = obj.Properties()
+                .Where(p => p.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            removedCount += matchedProperties.Count;
+            foreach (var property in matchedProperties)
+            {
+                property.Remove();
+            }
+
+            foreach (var property in obj.Properties().ToList())
+            {
+                removedCount += RemovePropertyRecursive(property.Value, propertyName);
+            }
+        }
+        else if (token is JArray array)
+        {
+            foreach (var child in array.ToList())
+            {
+                removedCount += RemovePropertyRecursive(child, propertyName);
+            }
+        }
+
+        return removedCount;
     }
 
     static void 机翻导入()
@@ -392,59 +572,33 @@ public static class Start
     static void FillTranz()
     {
         string directoryPath = Tools.ReadLine("请拖入PT字典目录（务必备份）：");
-        // 获取目录中所有JSON文件
-        var jsonFiles = Directory.GetFiles(directoryPath, "*.json", SearchOption.AllDirectories);
 
         Timer.Start();
-        // 遍历所有JSON文件，得到待处理对象和已翻译词典
-        Dictionary<string, JArray> 待处理对象 = new Dictionary<string, JArray>();
-        Dictionary<string, string> 已翻译字典 = new Dictionary<string, string>();
-        foreach (var jsonFile in jsonFiles)
+        // 第一遍只提取已翻译条目，避免把所有 JSON 常驻在内存里。
+        var 已翻译字典 = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var jsonFile in Directory.EnumerateFiles(directoryPath, "*.json", SearchOption.AllDirectories))
         {
-            string jsonContent = File.ReadAllText(jsonFile);
-            JArray jsonArray = JArray.Parse(jsonContent);
-            待处理对象.Add(jsonFile, jsonArray);
-
-            // 将每个JObject添加到列表中
-            foreach (JObject jobj in jsonArray.ToObject<List<JObject>>())
+            var jsonArray = LoadJsonArray(jsonFile);
+            foreach (JObject jobj in jsonArray.Children<JObject>())
             {
                 // 有疑问的词条也应该被批量翻译吗，只要也标注为有疑问就好？
                 //if (jobj.ContainsKey("stage") && (int)jobj["stage"].ToObject(typeof(int)) > 0)
-                if (jobj.ContainsKey("stage") && jobj["stage"].ToString() == "1")
+                if (HasStage(jobj, "1"))
                 {
-                    string 原文 = jobj["original"].ToString().Trim();
-                    string 译文 = jobj["translation"].ToString().Trim();
-                    if (已翻译字典.ContainsKey(原文))
+                    string 原文 = GetJObjectStringValue(jobj, "original", true);
+                    string 译文 = GetJObjectStringValue(jobj, "translation", true);
+
+                    string 现有译文;
+                    if (已翻译字典.TryGetValue(原文, out 现有译文))
                     {
-                        if (已翻译字典[原文] != 译文)
+                        if (!string.Equals(现有译文, 译文, StringComparison.Ordinal))
                         {
                             Console.WriteLine($"【警告】“{原文}”被翻译为多个版本！");
                         }
                     }
                     else
                     {
-                        if (原文.StartsWith("\"") && !译文.StartsWith("\""))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
-                        }
-                        if (原文.EndsWith("\"") && !译文.EndsWith("\""))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
-                        }
-
-                        if ((原文.Count(c => c == '%') >= 2) && (译文.Count(c => c == '%') < 2))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的百分号似乎缺失了！");
-                        }
-
-                        if (原文.Contains('{') && !译文.Contains('{'))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的左花括号似乎缺失了！");
-                        }
-                        if (原文.Contains('}') && !译文.Contains('}'))
-                        {
-                            Console.WriteLine($"【警告】“{原文}”的右花括号似乎缺失了！");
-                        }
+                        WarnIfFormattingLooksLost(原文, 译文);
                         已翻译字典.Add(原文, 译文);
                     }
                 }
@@ -453,23 +607,25 @@ public static class Start
         Timer.Stop();
         Console.WriteLine("字典读取完成！开始替换未翻译词条！");
         Timer.Start();
-        foreach (var 条目 in 待处理对象)
+        foreach (var jsonFile in Directory.EnumerateFiles(directoryPath, "*.json", SearchOption.AllDirectories))
         {
             bool 需要输出 = false;
-            List<JObject> 新文件 = new List<JObject>();
-            foreach (JObject jobj in 条目.Value.ToObject<List<JObject>>())
+            var jsonArray = LoadJsonArray(jsonFile);
+            foreach (JObject jobj in jsonArray.Children<JObject>())
             {
-                string 原文 = jobj["original"].ToString();
-                if (jobj.ContainsKey("stage") && jobj["stage"].ToString() == "0")
+                string 原文 = GetJObjectStringValue(jobj, "original");
+                if (HasStage(jobj, "0"))
                 {
+                    string 去空白原文 = 原文.Trim();
+                    string 翻译;
                     //// 天麻临时特殊处理1
                     //Match IMGSRC = Regex.Match(原文, $"^\"<img src='(.*?)'>\"$");
-                    if (已翻译字典.ContainsKey(原文))
+                    if (已翻译字典.TryGetValue(原文, out 翻译))
                     {
-                        Console.WriteLine($"【翻译】{已翻译字典[原文]}");
-                        jobj["translation"] = 已翻译字典[原文];
-                        jobj["stage"] = 1;
+                        Console.WriteLine($"【翻译】{翻译}");
+                        ApplyTranslation(jobj, 翻译);
                         需要输出 = true;
+                        continue;
                     }
                     //// 天麻临时特殊处理1
                     //else if (IMGSRC.Success && 已翻译字典.ContainsKey(IMGSRC.Groups[1].Value))
@@ -480,70 +636,63 @@ public static class Start
                     //    需要输出 = true;
                     //}
                     // 引号括起的也要拿去和不括起的比较
-                    else if (原文.Trim().StartsWith("\"") || 原文.Trim().EndsWith("\""))
+                    if ((去空白原文.StartsWith("\"", StringComparison.Ordinal) || 去空白原文.EndsWith("\"", StringComparison.Ordinal))
+                        && 已翻译字典.TryGetValue(去空白原文.Trim('"'), out 翻译))
                     {
-                        string 处理后原文 = 原文.Trim().Trim('"');
-
-                        if (已翻译字典.ContainsKey(处理后原文))
+                        char? 前引号 = null;
+                        char? 后引号 = null;
+                        if (去空白原文.StartsWith("\"", StringComparison.Ordinal))
                         {
-                            char? 前引号 = null;
-                            char? 后引号 = null;
-                            if (原文.Trim().StartsWith("\""))
-                            {
-                                前引号 = '"';
-                            }
-                            if (原文.Trim().EndsWith("\""))
-                            {
-                                后引号 = '"';
-                            }
-
-                            Console.WriteLine($"【括号】{已翻译字典[处理后原文]}");
-                            jobj["translation"] = $"{前引号}{已翻译字典[处理后原文]}{后引号}";
-                            jobj["stage"] = 1;
-                            需要输出 = true;
+                            前引号 = '"';
                         }
+                        if (去空白原文.EndsWith("\"", StringComparison.Ordinal))
+                        {
+                            后引号 = '"';
+                        }
+
+                        Console.WriteLine($"【括号】{翻译}");
+                        ApplyTranslation(jobj, $"{前引号}{翻译}{后引号}");
+                        需要输出 = true;
+                        continue;
                     }
                     // 处理残留括号
-                    else if (原文.Trim().StartsWith("(\"") || 原文.Trim().EndsWith("\")"))
+                    if ((去空白原文.StartsWith("(\"", StringComparison.Ordinal) || 去空白原文.EndsWith("\")", StringComparison.Ordinal))
+                        && 已翻译字典.TryGetValue(去空白原文.TrimStart('(').TrimEnd(')').Trim('"'), out 翻译))
                     {
-                        string 处理后原文 = 原文.Trim().TrimStart('(').TrimEnd(')').Trim('"');
-                        if (已翻译字典.ContainsKey(处理后原文))
+                        char? 前括号 = null;
+                        char? 后括号 = null;
+                        char? 前引号 = null;
+                        char? 后引号 = null;
+                        if (去空白原文.StartsWith("(\"", StringComparison.Ordinal))
                         {
-                            char? 前括号 = null;
-                            char? 后括号 = null;
-                            char? 前引号 = null;
-                            char? 后引号 = null;
-                            if (原文.Trim().StartsWith("(\""))
-                            {
-                                前括号 = '(';
-                                前引号 = '"';
-                            }
-                            else if(原文.Trim().StartsWith("("))
-                            {
-                                前括号 = '(';
-                            }
-                            if (原文.Trim().EndsWith("\")"))
-                            {
-                                后括号 = ')';
-                                后引号 = '"';
-                            }
-                            else if (原文.Trim().StartsWith(")"))
-                            {
-                                后括号 = ')';
-                            }
-
-                            Console.WriteLine($"【括号】{已翻译字典[处理后原文]}");
-                            jobj["translation"] = $"{前括号}{前引号}{已翻译字典[处理后原文]}{后引号}{后括号}";
-                            jobj["stage"] = 1;
-                            需要输出 = true;
+                            前括号 = '(';
+                            前引号 = '"';
                         }
+                        else if (去空白原文.StartsWith("(", StringComparison.Ordinal))
+                        {
+                            前括号 = '(';
+                        }
+                        if (去空白原文.EndsWith("\")", StringComparison.Ordinal))
+                        {
+                            后括号 = ')';
+                            后引号 = '"';
+                        }
+                        else if (去空白原文.StartsWith(")", StringComparison.Ordinal))
+                        {
+                            后括号 = ')';
+                        }
+
+                        Console.WriteLine($"【括号】{翻译}");
+                        ApplyTranslation(jobj, $"{前括号}{前引号}{翻译}{后引号}{后括号}");
+                        需要输出 = true;
+                        continue;
                     }
                     // 百分号括起的也要拿去和不括起的比较
-                    else if (原文.StartsWith("%") && 原文.EndsWith("%") && 已翻译字典.ContainsKey(原文.Trim('%')))
+                    if (原文.StartsWith("%", StringComparison.Ordinal) && 原文.EndsWith("%", StringComparison.Ordinal)
+                        && 已翻译字典.TryGetValue(原文.Trim('%'), out 翻译))
                     {
-                        Console.WriteLine($"【百分】{已翻译字典[原文.Trim('%')]}");
-                        jobj["translation"] = $"%{已翻译字典[原文.Trim('%')]}%";
-                        jobj["stage"] = 1;
+                        Console.WriteLine($"【百分】{翻译}");
+                        ApplyTranslation(jobj, $"%{翻译}%");
                         需要输出 = true;
                     }
                     //// 天麻临时特殊处理2
@@ -555,12 +704,10 @@ public static class Start
                     //    需要输出 = true;
                     //}
                 }
-                新文件.Add(jobj);
             }
             if (需要输出)
             {
-                string jsonContent = JsonConvert.SerializeObject(新文件, Formatting.Indented);
-                File.WriteAllText(条目.Key, jsonContent);
+                WriteJsonArray(jsonFile, jsonArray);
             }
         }
         Timer.Stop();
@@ -568,6 +715,153 @@ public static class Start
         {
             Process.Start(directoryPath);
         }
+    }
+
+    static JToken LoadJsonToken(string jsonFile)
+    {
+        using (var reader = File.OpenText(jsonFile))
+        using (var jsonReader = new JsonTextReader(reader))
+        {
+            return JToken.Load(jsonReader);
+        }
+    }
+
+    static JArray LoadJsonArray(string jsonFile)
+    {
+        JArray jsonArray = LoadJsonToken(jsonFile) as JArray;
+        if (jsonArray == null)
+        {
+            throw new JsonReaderException($"{Path.GetFileName(jsonFile)}不是PT数组字典。");
+        }
+
+        return jsonArray;
+    }
+
+    static void WriteJsonArray(string jsonFile, JArray jsonArray)
+    {
+        using (var fileStream = new FileStream(jsonFile, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (var writer = new StreamWriter(fileStream, new UTF8Encoding(false)))
+        using (var jsonWriter = new JsonTextWriter(writer) { Formatting = Formatting.Indented })
+        {
+            jsonArray.WriteTo(jsonWriter);
+        }
+    }
+
+    static bool HasStage(JObject jobj, string stage)
+    {
+        JToken stageToken;
+        return jobj.TryGetValue("stage", out stageToken)
+            && stageToken != null
+            && string.Equals(stageToken.ToString(), stage, StringComparison.Ordinal);
+    }
+
+    static string GetJObjectStringValue(JObject jobj, string propertyName, bool trim = false)
+    {
+        JToken valueToken;
+        if (!jobj.TryGetValue(propertyName, out valueToken) || valueToken == null)
+        {
+            return string.Empty;
+        }
+
+        string value = valueToken.ToString();
+        return trim ? value.Trim() : value;
+    }
+
+    static void ApplyTranslation(JObject jobj, string translation)
+    {
+        jobj["translation"] = translation;
+        jobj["stage"] = 1;
+    }
+
+    static void WarnIfFormattingLooksLost(string 原文, string 译文)
+    {
+        if (原文.StartsWith("\"", StringComparison.Ordinal) && !译文.StartsWith("\"", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
+        }
+        if (原文.EndsWith("\"", StringComparison.Ordinal) && !译文.EndsWith("\"", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"【警告】“{原文}”的引号似乎被忽略了！");
+        }
+
+        if (ContainsCharAtLeast(原文, '%', 2) && !ContainsCharAtLeast(译文, '%', 2))
+        {
+            Console.WriteLine($"【警告】“{原文}”的百分号似乎缺失了！");
+        }
+
+        if (原文.IndexOf('{') >= 0 && 译文.IndexOf('{') < 0)
+        {
+            Console.WriteLine($"【警告】“{原文}”的左花括号似乎缺失了！");
+        }
+        if (原文.IndexOf('}') >= 0 && 译文.IndexOf('}') < 0)
+        {
+            Console.WriteLine($"【警告】“{原文}”的右花括号似乎缺失了！");
+        }
+    }
+
+    static bool ContainsCharAtLeast(string text, char target, int count)
+    {
+        if (string.IsNullOrEmpty(text) || count <= 0)
+        {
+            return false;
+        }
+
+        int found = 0;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == target && ++found >= count)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static bool LooksLikeJsonMojibake(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        if (text.IndexOf('\uFFFD') >= 0)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c >= '\u0080' && c <= '\u009F')
+            {
+                return true;
+            }
+        }
+
+        int 命中特征数 = 0;
+        foreach (string 特征 in json乱码特征)
+        {
+            int 搜索起点 = 0;
+            while (搜索起点 < text.Length)
+            {
+                int 命中位置 = text.IndexOf(特征, 搜索起点, StringComparison.Ordinal);
+                if (命中位置 < 0)
+                {
+                    break;
+                }
+
+                命中特征数++;
+                if (命中特征数 >= 2)
+                {
+                    return true;
+                }
+
+                搜索起点 = 命中位置 + 特征.Length;
+            }
+        }
+
+        return false;
     }
     static void 自动修正(string 游戏目录, string 字典根目录)
     {
@@ -613,12 +907,13 @@ public static class Start
         // 合并后要去除尾逗号，再加回方括号
         string 合并后的字符串 = "[" + pt输入.ToString().TrimEnd(',') + "]";
         JArray 修正字典 = JArray.Parse(合并后的字符串);
+        var 替换计划 = Tools.BuildRegexReplacePlan(修正字典);
 
         Console.WriteLine("根据CPU性能与磁盘读写速度，修正过程可能会长达1秒~60秒，请勿中止程序！");
         Parallel.ForEach(待汉化文件, (文件名) =>
         {
             string 待处理文本 = File.ReadAllText(文件名);
-            待处理文本 = Tools.RegexReplace(待处理文本, 修正字典);
+            待处理文本 = Tools.RegexReplace(待处理文本, 替换计划);
             File.WriteAllText(文件名, 待处理文本, Configs.fileEncoding);
         });
 
@@ -656,6 +951,7 @@ public static class Start
         // 合并后要去除尾逗号，再加回方括号
         string 合并后的字符串 = "[" + pt输入.ToString().TrimEnd(',') + "]";
         JArray 修正字典 = JArray.Parse(合并后的字符串);
+        var 替换计划 = Tools.BuildRegexReplacePlan(修正字典);
         Timer.Stop();
         Console.WriteLine("字典翻译导入完成！正在全局替换，请稍候……");
 
@@ -663,7 +959,7 @@ public static class Start
         foreach (var 文件名 in 文件名List)
         {
             string 待处理文本 = File.ReadAllText(文件名);
-            待处理文本 = Tools.RegexReplace(待处理文本, 修正字典);
+            待处理文本 = Tools.RegexReplace(待处理文本, 替换计划);
             File.WriteAllText(文件名, 待处理文本, Configs.fileEncoding);
         }
         Timer.Stop();
@@ -753,6 +1049,7 @@ public static class Start
                 {
                     // 读取pt脚本
                     JArray jsonArray = JArray.Parse(ptJsonContent);
+                    var 替换计划 = !isIMG ? Tools.BuildRegexReplacePlan(jsonArray) : null;
 
                     foreach (var item in targetFiles)
                     {
@@ -761,7 +1058,7 @@ public static class Start
                         if (!isIMG)
                         {
                             // 使用字典替换原文
-                            scriptContent = Tools.RegexReplace(scriptContent, jsonArray);
+                            scriptContent = Tools.RegexReplace(scriptContent, 替换计划);
                         }
                         else
                         {
@@ -1324,10 +1621,18 @@ public static class Start
         }
         int nextKeyIndex = maxKeyNum + 1;
 
+        // 追踪已处理的原文，防止 newEntries 中同一原文多次出现导致重复 key
+        var processedOriginals = new HashSet<string>();
         string basePathWithoutExt = Path.ChangeExtension(relativePath, "");
 
         foreach (var entry in newEntries)
         {
+            // 原文已在当前批次处理过，跳过（防止源文件内同一原文重复出现多次）
+            if (!processedOriginals.Add(entry.Original))
+            {
+                continue;
+            }
+
             if (oldEntriesDict.TryGetValue(entry.Original, out JObject existingObject))
             {
                 // 如果旧条目存在，直接使用
@@ -1420,14 +1725,14 @@ public static class Start
     #endregion
 
     /// <summary>
-    /// 对比新旧两个目录，提取所有新增或内容被修改的文件到新目录。
+    /// 对比A目录和B目录，将B目录中新增或内容不同的文件按目录结构复制到C目录。
     /// </summary>
     static void ExtractModifiedFiles()
     {
         // 1. 获取用户输入的目录路径
-        string oldPath = Tools.ReadLine("请拖入原字典目录:");
-        string newPath = Tools.ReadLine("请拖入新字典目录:");
-        string outputPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Extracted_Files_C");
+        string oldPath = Tools.ReadLine("请拖入A目录（作为对比基准）:");
+        string newPath = Tools.ReadLine("请拖入B目录（提取这个目录里新增/不同的文件）:");
+        string outputPath = Tools.ReadLine("请拖入空的C目录（用于接收提取结果）:");
 
         if (!Directory.Exists(oldPath) || !Directory.Exists(newPath))
         {
@@ -1435,20 +1740,43 @@ public static class Start
             return;
         }
 
-        // 2. 准备输出目录
-        Console.WriteLine($"文件将被提取到: {outputPath}");
-        if (Directory.Exists(outputPath))
+        if (string.IsNullOrWhiteSpace(outputPath))
         {
-            Console.WriteLine("警告：输出目录已存在，将先被清空。");
-            Tools.CleanDirectory(outputPath);
+            Console.WriteLine("【错误】C目录不能为空，操作已取消。");
+            return;
         }
-        Directory.CreateDirectory(outputPath);
+
+        string fullOldPath = Path.GetFullPath(oldPath);
+        string fullNewPath = Path.GetFullPath(newPath);
+        string fullOutputPath = Path.GetFullPath(outputPath);
+
+        if (fullOldPath.Equals(fullOutputPath, StringComparison.OrdinalIgnoreCase) ||
+            fullNewPath.Equals(fullOutputPath, StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("【错误】C目录不能与A目录或B目录相同，操作已取消。");
+            return;
+        }
+
+        // 2. 准备输出目录
+        Console.WriteLine($"文件将被提取到: {fullOutputPath}");
+        if (Directory.Exists(fullOutputPath))
+        {
+            if (Directory.EnumerateFileSystemEntries(fullOutputPath).Any())
+            {
+                Console.WriteLine("【错误】C目录不是空目录，操作已取消。");
+                return;
+            }
+        }
+        else
+        {
+            Directory.CreateDirectory(fullOutputPath);
+        }
 
         Console.WriteLine("正在开始对比文件，请稍候...");
         Timer.Start();
 
         // 3. 获取新目录中的所有文件
-        var newFiles = Directory.GetFiles(newPath, "*.*", SearchOption.AllDirectories);
+        var newFiles = Directory.EnumerateFiles(newPath, "*.*", SearchOption.AllDirectories);
         int copiedFilesCount = 0;
         int processedFilesCount = 0;
 
@@ -1457,7 +1785,7 @@ public static class Start
         {
             var relativePath = Tools.GetrelativePath(newFile, newPath);
             var oldFile = Path.Combine(oldPath, relativePath);
-            var destFile = Path.Combine(outputPath, relativePath);
+            var destFile = Path.Combine(fullOutputPath, relativePath);
 
             bool shouldCopy = false;
             string reason = "";
@@ -1491,12 +1819,12 @@ public static class Start
         });
 
         Timer.Stop();
-        Console.WriteLine($"\n对比完成！共处理 {processedFilesCount} 个文件，提取了 {copiedFilesCount} 个新增或修改的文件到目录 C。");
+        Console.WriteLine($"\n对比完成！共处理 {processedFilesCount} 个文件，提取了 {copiedFilesCount} 个新增或修改的文件到C目录。");
 
         // 5. 如果配置允许，自动打开输出文件夹
         if (Configs.autoOpenFolder)
         {
-            Process.Start(outputPath);
+            Process.Start(fullOutputPath);
         }
     }
 
@@ -1510,31 +1838,104 @@ public static class Start
     {
         try
         {
-            // 不预先检查文件大小，因为换行符不同会导致大小不同
-            byte[] bytes1 = File.ReadAllBytes(path1);
-            byte[] bytes2 = File.ReadAllBytes(path2);
-
-            // 优化：如果文件在字节层面完全一样，则直接返回 true，这是最快的情况。
-            if (bytes1.SequenceEqual(bytes2))
+            using (var stream1 = new FileStream(path1, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.SequentialScan))
+            using (var stream2 = new FileStream(path2, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.SequentialScan))
             {
-                return true;
+                // 字节数相同时，先做一次原始流比较，命中时最快。
+                if (stream1.Length == stream2.Length && StreamsEqual(stream1, stream2))
+                {
+                    return true;
+                }
+
+                stream1.Position = 0;
+                stream2.Position = 0;
+                return StreamsEqualIgnoringCarriageReturn(stream1, stream2);
             }
-
-            // 规范化处理：通过移除所有回车符（Carriage Return, CR, 0x0D, '\r'）的字节
-            // 来实现对不同换行符的兼容。这会将 Windows 的 CRLF (`\r\n`) 和
-            // Unix 的 LF (`\n`) 都视为相同的换行。
-            // 使用 LINQ 的 Where 操作可以高效地创建一个不包含 CR 字节的新序列。
-            var normalizedBytes1 = bytes1.Where(b => b != 0x0D);
-            var normalizedBytes2 = bytes2.Where(b => b != 0x0D);
-
-            // 比较规范化后的字节序列。
-            return normalizedBytes1.SequenceEqual(normalizedBytes2);
         }
         catch (IOException ex)
         {
             // 处理文件可能被占用等IO异常
             Console.WriteLine($"【IO错误】无法对比文件: {ex.Message}");
             return false; // 如果无法比较，则默认它们不同，以便提取出来供用户检查。
+        }
+    }
+
+    private static bool StreamsEqual(Stream stream1, Stream stream2)
+    {
+        byte[] buffer1 = new byte[81920];
+        byte[] buffer2 = new byte[81920];
+
+        while (true)
+        {
+            int read1 = stream1.Read(buffer1, 0, buffer1.Length);
+            int read2 = stream2.Read(buffer2, 0, buffer2.Length);
+
+            if (read1 != read2)
+            {
+                return false;
+            }
+
+            if (read1 == 0)
+            {
+                return true;
+            }
+
+            for (int i = 0; i < read1; i++)
+            {
+                if (buffer1[i] != buffer2[i])
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
+    private static bool StreamsEqualIgnoringCarriageReturn(Stream stream1, Stream stream2)
+    {
+        byte[] buffer1 = new byte[81920];
+        byte[] buffer2 = new byte[81920];
+        int bufferIndex1 = 0;
+        int bufferIndex2 = 0;
+        int bytesInBuffer1 = 0;
+        int bytesInBuffer2 = 0;
+
+        while (true)
+        {
+            int? next1 = ReadNextComparableByte(stream1, buffer1, ref bufferIndex1, ref bytesInBuffer1);
+            int? next2 = ReadNextComparableByte(stream2, buffer2, ref bufferIndex2, ref bytesInBuffer2);
+
+            if (!next1.HasValue || !next2.HasValue)
+            {
+                return next1 == next2;
+            }
+
+            if (next1.Value != next2.Value)
+            {
+                return false;
+            }
+        }
+    }
+
+    private static int? ReadNextComparableByte(Stream stream, byte[] buffer, ref int bufferIndex, ref int bytesInBuffer)
+    {
+        while (true)
+        {
+            if (bufferIndex >= bytesInBuffer)
+            {
+                bytesInBuffer = stream.Read(buffer, 0, buffer.Length);
+                bufferIndex = 0;
+
+                if (bytesInBuffer == 0)
+                {
+                    return null;
+                }
+            }
+
+            byte value = buffer[bufferIndex++];
+            if (value != 0x0D)
+            {
+                return value;
+            }
         }
     }
 
